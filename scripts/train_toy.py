@@ -10,8 +10,14 @@ import torch.nn.functional as F
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset.toy import inf_train_gen
-from modules.network import ToyNet
-from modules.common import simple_schedule, cosine_schedule, train_loop, test_loop
+from modules.network import ToyVAE
+from modules.common import (
+    simple_schedule,
+    cosine_schedule,
+    train_loop,
+    recons_loop,
+    test_loop,
+)
 
 
 def make_toy_figure(x):
@@ -28,6 +34,7 @@ def parse_args():
 
     parser.add_argument("--input_dim", type=int, default=2)
     parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--enc_dim", type=int, default=2)
     parser.add_argument("--diffusion_steps", type=int, default=20)
     parser.add_argument("--beta_1", type=int, default=1e-4)
     parser.add_argument("--beta_T", type=int, default=0.02)
@@ -72,9 +79,9 @@ def main():
     #########################
     # Create PyTorch Models #
     #########################
-    model = ToyNet(args.input_dim, args.hidden_dim, args.diffusion_steps).to(
-        args.device
-    )
+    model = ToyVAE(
+        args.input_dim, args.hidden_dim, args.enc_dim, args.diffusion_steps
+    ).to(args.device)
     opt = torch.optim.Adam(model.parameters(), lr=3e-4)
 
     ######################
@@ -83,6 +90,7 @@ def main():
     orig_data = inf_train_gen(args.dataset, args.n_test_points).__next__()
     fig = make_toy_figure(orig_data)
     writer.add_figure("original", fig, 0)
+    orig_data = torch.from_numpy(orig_data).to(args.device)
 
     ###############################
     # Create diffusion parameters #
@@ -96,9 +104,7 @@ def main():
 
     ################################
 
-    costs = {
-        "diffusion_loss": [],
-    }
+    costs = {"diffusion_loss": [], "kl_loss": []}
     start = time.time()
     for iters in range(args.iters):
         model.train()
@@ -132,8 +138,14 @@ def main():
             print("#" * 30)
             print("Generating samples")
 
-            with torch.no_grad():
-                samples = test_loop(model, params, args)
+            # Generate reconstructions
+            samples = recons_loop(orig_data, model, params, args)
+
+            fig = make_toy_figure(samples.cpu())
+            writer.add_figure("reconstructed", fig, iters)
+
+            # Generate samples
+            samples = test_loop(model, params, args)
 
             fig = make_toy_figure(samples.cpu())
             writer.add_figure("generated", fig, iters)

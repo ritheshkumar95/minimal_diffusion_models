@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
+import torch.distributions as D
 
 
 def simple_schedule(beta_1, beta_T, T, device):
@@ -60,27 +61,51 @@ def train_loop(data, model, opt, params, args):
     z_t, x_t = forward_process(data, t, params)
 
     # Run reverse process network to predict the noise added
-    pred_z_t = model(x_t, t)
+    pred_z_t, mu, logs = model(data, x_t, t)
+    Q = D.Normal(mu, logs.exp())
+    P = D.Normal(torch.zeros_like(mu), torch.ones_like(logs))
 
     # Compute the simple diffusion loss
     loss_simple = F.mse_loss(pred_z_t, z_t)
+    loss_kl = D.kl.kl_divergence(Q, P).mean()
 
     # Perform backward pass
     opt.zero_grad()
-    loss_simple.backward()
+    (loss_simple + 0.25 * loss_kl).backward()
     opt.step()
 
-    return {"diffusion_loss": loss_simple.item()}
+    return {"diffusion_loss": loss_simple.item(), "kl_loss": loss_kl.item()}
 
 
+@torch.no_grad()
 def test_loop(model, params, args):
     # Start from random noise in N(0, 1)
     x_t = torch.randn(args.n_test_points, args.input_dim, device=args.device)
 
+    # Sample latent from prior
+    z_p = torch.randn(x_t.size(0), args.enc_dim, device=args.device)
+
     # Iteratively run the reverse process to convert noise to data
     for t in tqdm(reversed(range(args.diffusion_steps))):
         tensor_t = torch.tensor(t, device=args.device)
-        z_t = model(x_t, tensor_t)
+        z_t = model.generate(z_p, x_t, tensor_t)
+        x_t = reverse_process(z_t, x_t, t, params)
+
+    return x_t
+
+
+@torch.no_grad()
+def recons_loop(data, model, params, args):
+    # Start from random noise in N(0, 1)
+    x_t = torch.randn(args.n_test_points, args.input_dim, device=args.device)
+
+    # Sample latent from posterior
+    z_q, _, _ = model.posterior(data, temp=0.6)
+
+    # Iteratively run the reverse process to convert noise to data
+    for t in tqdm(reversed(range(args.diffusion_steps))):
+        tensor_t = torch.tensor(t, device=args.device)
+        z_t = model.generate(z_q, x_t, tensor_t)
         x_t = reverse_process(z_t, x_t, t, params)
 
     return x_t
