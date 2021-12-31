@@ -26,7 +26,8 @@ def forward_process(x_0, t, params):
     z_t = torch.randn_like(x_0)
 
     # Index alpha_bar_t
-    alpha_bar_t = params["alpha_bars"][t].unsqueeze(-1)
+    shp = (x_0.size(0),) + (1,) * (x_0.dim() - 1)
+    alpha_bar_t = params["alpha_bars"][t].view(*shp)
 
     # Compute x_t as interpolation of x_0 and x_T
     x_t = alpha_bar_t.pow(0.5) * x_0 + (1 - alpha_bar_t).pow(0.5) * z_t
@@ -36,8 +37,9 @@ def forward_process(x_0, t, params):
 
 def reverse_process(z_t, x_t, t, params):
     # Index the diffusion params
+    shp = (1,) * x_t.dim()
     alpha_t, beta_t, alpha_bar_t = [
-        params[key][t].unsqueeze(-1) for key in ["alphas", "betas", "alpha_bars"]
+        params[key][t].view(*shp) for key in ["alphas", "betas", "alpha_bars"]
     ]
 
     # Sample noise from N(0, 1)
@@ -73,13 +75,13 @@ def train_loop(data, model, opt, params, args):
     return {"diffusion_loss": loss_simple.item()}
 
 
-def test_loop(model, params, args):
+def test_loop(x_shp, model, params, args):
     # Start from random noise in N(0, 1)
-    x_t = torch.randn(args.n_test_points, args.input_dim, device=args.device)
+    x_t = torch.randn(*x_shp, device=args.device)
 
     # Iteratively run the reverse process to convert noise to data
     for t in tqdm(reversed(range(args.diffusion_steps))):
-        tensor_t = torch.tensor(t, device=args.device)
+        tensor_t = torch.tensor([t] * x_t.size(0), device=args.device)
         z_t = model(x_t, tensor_t)
         x_t = reverse_process(z_t, x_t, t, params)
 
